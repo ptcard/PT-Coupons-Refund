@@ -71,6 +71,7 @@
   }
   .btn-primary { background: var(--blue-dark); color: #fff; }
   .btn-secondary { background: #e3e7ee; color: #222; }
+  .form-footer { margin-top: 28px; padding-top: 8px; border-top: 1px solid #ccc; font-size: 11px; color: #555; }
   .modal-bg {
     display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45);
     align-items: center; justify-content: center; z-index: 50; padding: 16px;
@@ -208,6 +209,8 @@
     <button class="btn-primary" id="pdfBtn" type="button">Download PDF</button>
     <button class="btn-secondary" id="resetBtn" type="button">New Form</button>
   </div>
+
+  <footer class="form-footer">MKT/FRM/11.8</footer>
 </div>
 
 <div class="modal-bg" id="modal">
@@ -272,32 +275,47 @@ function todayISO() {
 const pads = {};
 function setupPad(id) {
   const canvas = $(id), ctx = canvas.getContext('2d');
-  let drawing = false, dirty = false, lastW = 0;
+  // Strokes are stored as points relative to the pad size, so they can be redrawn
+  // exactly at any size (rotating a phone, scrollbars appearing) without distortion
+  let strokes = [], drawing = false, lastW = 0, cssW = 0, cssH = 0;
+  function style() { ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#1a3a8f'; }
+  function redraw() {
+    ctx.clearRect(0, 0, cssW, cssH); style();
+    strokes.forEach(st => {
+      ctx.beginPath();
+      st.forEach(([fx, fy], i) => { const x = fx * cssW, y = fy * cssH; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      if (st.length === 1) ctx.lineTo(st[0][0] * cssW + 0.1, st[0][1] * cssH);
+      ctx.stroke();
+    });
+  }
   function resize() {
     const r = canvas.getBoundingClientRect();
-    // Ignore height-only changes (mobile address bar) so scrolling never wipes a signature
-    if (Math.round(r.width) === lastW) return;
-    const saved = dirty ? canvas.toDataURL() : null;
-    lastW = Math.round(r.width);
+    // Ignore height-only changes (mobile address bar) so scrolling never disturbs a signature
+    if (!r.width || Math.round(r.width) === lastW) return;
+    lastW = Math.round(r.width); cssW = r.width; cssH = r.height;
     const ratio = window.devicePixelRatio || 1;
-    canvas.width = r.width * ratio; canvas.height = r.height * ratio;
+    canvas.width = cssW * ratio; canvas.height = cssH * ratio;
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-    ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#1a3a8f';
-    if (saved) { const img = new Image(); img.onload = () => ctx.drawImage(img, 0, 0, r.width, r.height); img.src = saved; }
+    redraw();
   }
-  const pos = e => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  const pos = e => { const r = canvas.getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]; };
   canvas.addEventListener('pointerdown', e => {
-    drawing = true; dirty = true; canvas.setPointerCapture(e.pointerId);
-    ctx.beginPath(); ctx.moveTo(...pos(e)); e.preventDefault();
+    drawing = true; canvas.setPointerCapture(e.pointerId);
+    const p = pos(e); strokes.push([p]);
+    style(); ctx.beginPath(); ctx.moveTo(p[0] * cssW, p[1] * cssH); e.preventDefault();
   });
-  canvas.addEventListener('pointermove', e => { if (!drawing) return; ctx.lineTo(...pos(e)); ctx.stroke(); e.preventDefault(); });
+  canvas.addEventListener('pointermove', e => {
+    if (!drawing) return;
+    const p = pos(e); strokes[strokes.length - 1].push(p);
+    ctx.lineTo(p[0] * cssW, p[1] * cssH); ctx.stroke(); e.preventDefault();
+  });
   ['pointerup', 'pointercancel', 'pointerleave'].forEach(t => canvas.addEventListener(t, () => drawing = false));
   window.addEventListener('resize', resize);
   resize();
   pads[id] = {
     canvas,
-    isEmpty: () => !dirty,
-    clear: () => { ctx.clearRect(0, 0, canvas.width, canvas.height); dirty = false; }
+    isEmpty: () => strokes.length === 0,
+    clear: () => { strokes = []; redraw(); }
   };
 }
 ['sigReceived', 'sigApproved', 'sigAccepted', 'sigCash'].forEach(setupPad);
@@ -448,6 +466,12 @@ function generatePDF() {
   text('Customer received cash:', L, y - 3);
   sig('sigCash', L + 66, y - 0.5, 50, 15); lineLbl(L + 66, y, 50, 'signature');
   text(fmtDate($('cashDate').value), L + 154, y - 1.5, { align: 'center' }); lineLbl(L + 128, y, 52, 'Date');
+
+  // Footer: form reference
+  doc.setDrawColor(180); doc.line(L, 284, L + W, 284);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor(90);
+  text('MKT/FRM/11.8', L, 288.5);
+  doc.setTextColor(0);
 
   const name = ($('ref').value || 'PT-Coupons-Refund').replace(/[^\w-]+/g, '_');
   doc.save(`${name}.pdf`);
